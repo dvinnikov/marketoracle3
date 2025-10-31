@@ -1,0 +1,18 @@
+[project]
+name = "forex-backend"
+version = "0.1.0"
+description = "FastAPI backend bridging MT5 to a React/Vite UI (ticks, bars, strategies, predictions, signals, commands)."
+authors = [{name="You"}]
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.9",
+  "pydantic-settings>=2.5",
+]
+
+[tool.uvicorn]
+factory = true
+host = "127.0.0.1"
+port = 8000
+reload = true
