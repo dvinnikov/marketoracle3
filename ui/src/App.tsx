@@ -6,8 +6,9 @@ import { InstrumentSelector } from './components/InstrumentSelector';
 import { PredictionPanel } from './components/PredictionPanel';
 import { Activity, PlayCircle, PauseCircle } from 'lucide-react';
 import { Button } from './components/ui/button';
-import { toast } from 'sonner@2.0.3';
-import { Toaster } from './components/ui/sonner';
+import { Toaster, toast } from 'sonner';
+import { api } from "./lib/api";
+import { MarketBus, filterBySymbolTf } from "./lib/marketBus";
 
 export default function App() {
   const [selectedInstrument, setSelectedInstrument] = useState('EURUSD');
