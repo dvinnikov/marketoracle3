@@ -1,4 +1,5 @@
 import type { KeyboardEvent, MouseEvent } from 'react';
+import type { CheckedState } from '@radix-ui/react-checkbox';
 import { Checkbox } from './ui/checkbox';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
@@ -72,7 +73,11 @@ export function StrategySelector({ strategies, symbol, onStrategyChange }: Strat
                 >
                   <Checkbox
                     checked={strategy.enabled}
-                    onCheckedChange={() => onToggle()}
+                    onCheckedChange={(checked: CheckedState) => {
+                      if (typeof checked === 'boolean') {
+                        onToggle();
+                      }
+                    }}
                     onClick={(event: MouseEvent<HTMLButtonElement>) => event.stopPropagation()}
                     className="mt-1"
                   />
