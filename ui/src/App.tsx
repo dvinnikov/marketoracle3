@@ -24,20 +24,17 @@ import { connectMarketStream, type MarketMessage } from './lib/marketBus';
 const TIMEFRAME = 60;
 const CANDLE_LIMIT = 300;
 
-const statusMap: Record<SignalResponse['result'] | undefined, SignalLog['status']> = {
+const statusMap: Record<NonNullable<SignalResponse['result']>, SignalLog['status']> = {
   OPEN: 'ACTIVE',
   WIN: 'CLOSED',
   LOSS: 'STOPPED',
   BE: 'BE',
-  undefined: 'ACTIVE',
 };
 
-const resultMap: Record<SignalResponse['result'] | undefined, SignalLog['result'] | undefined> = {
-  OPEN: undefined,
+const resultMap: Partial<Record<NonNullable<SignalResponse['result']>, SignalLog['result']>> = {
   WIN: 'WIN',
   LOSS: 'LOSS',
   BE: 'BE',
-  undefined: undefined,
 };
 
 const formatTime = (timestamp: number) =>
@@ -98,8 +95,8 @@ export default function App() {
         entry: signal.entry,
         stop: signal.sl ?? null,
         target: signal.tp ?? null,
-        status: statusMap[signal.result],
-        result: resultMap[signal.result],
+        status: signal.result ? statusMap[signal.result] ?? 'ACTIVE' : 'ACTIVE',
+        result: signal.result ? resultMap[signal.result] : undefined,
         pnl: signal.pnl ?? null,
       };
     },
