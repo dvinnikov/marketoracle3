@@ -2,16 +2,25 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
 
-interface PredictionPanelProps {
-  prediction: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+export interface PredictionData {
+  direction: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
   confidence: number;
-  targetPrice?: number;
-  timeframe: string;
+  targetPrice?: number | null;
 }
 
-export function PredictionPanel({ prediction, confidence, targetPrice, timeframe }: PredictionPanelProps) {
+interface PredictionPanelProps {
+  prediction?: PredictionData;
+  timeframe: string;
+  loading?: boolean;
+}
+
+export function PredictionPanel({ prediction, timeframe, loading }: PredictionPanelProps) {
+  const direction = prediction?.direction ?? 'NEUTRAL';
+  const confidence = prediction?.confidence ?? 0;
+  const targetPrice = prediction?.targetPrice ?? null;
+
   const getPredictionColor = () => {
-    switch (prediction) {
+    switch (direction) {
       case 'BULLISH':
         return 'text-green-500';
       case 'BEARISH':
@@ -22,13 +31,13 @@ export function PredictionPanel({ prediction, confidence, targetPrice, timeframe
   };
 
   const getPredictionIcon = () => {
-    switch (prediction) {
+    switch (direction) {
       case 'BULLISH':
-        return <TrendingUp className="w-6 h-6" />;
+        return <TrendingUp className="h-6 w-6" />;
       case 'BEARISH':
-        return <TrendingDown className="w-6 h-6" />;
+        return <TrendingDown className="h-6 w-6" />;
       default:
-        return <Minus className="w-6 h-6" />;
+        return <Minus className="h-6 w-6" />;
     }
   };
 
@@ -38,31 +47,35 @@ export function PredictionPanel({ prediction, confidence, targetPrice, timeframe
         <CardTitle>Market Prediction</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className={getPredictionColor()}>
-                {getPredictionIcon()}
-              </div>
-              <div>
-                <p className={`${getPredictionColor()}`}>{prediction}</p>
-                <p className="text-muted-foreground text-sm">{timeframe}</p>
-              </div>
-            </div>
-            <Badge variant={confidence >= 70 ? 'default' : 'secondary'}>
-              {confidence}% Confidence
-            </Badge>
+        {loading ? (
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>Fetching prediction…</p>
           </div>
-          
-          {targetPrice && (
-            <div className="pt-3 border-t border-border">
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Target Price:</span>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className={getPredictionColor()}>{getPredictionIcon()}</div>
+                <div>
+                  <p className={getPredictionColor()}>{direction}</p>
+                  <p className="text-sm text-muted-foreground">{timeframe}</p>
+                </div>
+              </div>
+              <Badge variant={confidence >= 70 ? 'default' : 'secondary'}>
+                {confidence}% Confidence
+              </Badge>
+            </div>
+
+            {targetPrice !== null ? (
+              <div className="flex items-center justify-between border-t border-border pt-3">
+                <span className="text-muted-foreground">Target Price</span>
                 <span className="text-foreground">{targetPrice.toFixed(5)}</span>
               </div>
-            </div>
-          )}
-        </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">No target available yet.</p>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

@@ -100,6 +100,19 @@ You should see `{"ok": true, ...}` at `/healthz`. The server is empty until the 
 
 ---
 
+## UI configuration (.env)
+
+The React/Vite UI reads the backend URLs from environment variables. Create `ui/.env` (or `.env.local`) with:
+
+```
+VITE_BACKEND_BASE=http://127.0.0.1:8000
+VITE_BACKEND_WS=ws://127.0.0.1:8000/ws/market
+```
+
+Restart the dev server after changing these values so Vite can pick them up.
+
+---
+
 ## Running the MT5 EA (Bridge)
 
 1. Open MetaTrader 5 → **MetaEditor**.
