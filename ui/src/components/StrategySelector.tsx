@@ -1,3 +1,4 @@
+import type { KeyboardEvent, MouseEvent } from 'react';
 import { Checkbox } from './ui/checkbox';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
@@ -61,7 +62,7 @@ export function StrategySelector({ strategies, symbol, onStrategyChange }: Strat
                   role="button"
                   tabIndex={0}
                   onClick={onToggle}
-                  onKeyDown={(event) => {
+                  onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
                       onToggle();
@@ -72,7 +73,7 @@ export function StrategySelector({ strategies, symbol, onStrategyChange }: Strat
                   <Checkbox
                     checked={strategy.enabled}
                     onCheckedChange={() => onToggle()}
-                    onClick={(event) => event.stopPropagation()}
+                    onClick={(event: MouseEvent<HTMLButtonElement>) => event.stopPropagation()}
                     className="mt-1"
                   />
                   <div className="flex-1 space-y-1">
