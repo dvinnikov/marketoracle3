@@ -1,229 +1,374 @@
-import { useState, useEffect, useCallback } from 'react';
-import { ForexChart } from './components/ForexChart';
-import { StrategySelector, Strategy } from './components/StrategySelector';
-import { SignalLogs, SignalLog } from './components/SignalLogs';
-import { InstrumentSelector } from './components/InstrumentSelector';
-import { PredictionPanel } from './components/PredictionPanel';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, PlayCircle, PauseCircle } from 'lucide-react';
+import { Toaster, toast } from 'sonner';
+
+import { ForexChart, type PriceTarget } from './components/ForexChart';
+import { StrategySelector, type Strategy } from './components/StrategySelector';
+import { SignalLogs, type SignalLog } from './components/SignalLogs';
+import { InstrumentSelector } from './components/InstrumentSelector';
+import { PredictionPanel, type PredictionData } from './components/PredictionPanel';
 import { Button } from './components/ui/button';
-import { toast } from 'sonner@2.0.3';
-import { Toaster } from './components/ui/sonner';
+import {
+  fetchCandles,
+  fetchPrediction,
+  fetchSignals,
+  fetchStrategies,
+  enableStrategy,
+  disableStrategy,
+  type CandlePoint,
+  type SignalResponse,
+  type Strategy as ApiStrategy,
+} from './lib/api';
+import { connectMarketStream, type MarketMessage } from './lib/marketBus';
+
+const TIMEFRAME = 60;
+const CANDLE_LIMIT = 300;
+
+const statusMap: Record<SignalResponse['result'] | undefined, SignalLog['status']> = {
+  OPEN: 'ACTIVE',
+  WIN: 'CLOSED',
+  LOSS: 'STOPPED',
+  BE: 'BE',
+  undefined: 'ACTIVE',
+};
+
+const resultMap: Record<SignalResponse['result'] | undefined, SignalLog['result'] | undefined> = {
+  OPEN: undefined,
+  WIN: 'WIN',
+  LOSS: 'LOSS',
+  BE: 'BE',
+  undefined: undefined,
+};
+
+const formatTime = (timestamp: number) =>
+  new Date(timestamp).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+
+const mapStrategy = (strategy: ApiStrategy): Strategy => ({
+  ...strategy,
+  enabled: Boolean(strategy.enabled),
+});
 
 export default function App() {
   const [selectedInstrument, setSelectedInstrument] = useState('EURUSD');
-  const [isRunning, setIsRunning] = useState(false);
-  const [strategies, setStrategies] = useState<Strategy[]>([
-    {
-      id: 'rsi-crossover',
-      name: 'RSI Crossover',
-      description: 'Trades based on RSI crossing 30/70 levels with trend confirmation',
-      winRate: 68,
-      enabled: false,
-    },
-    {
-      id: 'macd-divergence',
-      name: 'MACD Divergence',
-      description: 'Identifies divergences between price and MACD for reversal trades',
-      winRate: 72,
-      enabled: false,
-    },
-    {
-      id: 'bollinger-bounce',
-      name: 'Bollinger Bounce',
-      description: 'Mean reversion strategy using Bollinger Band touches',
-      winRate: 65,
-      enabled: false,
-    },
-    {
-      id: 'ema-crossover',
-      name: 'EMA Crossover',
-      description: 'Fast and slow EMA crossover with volume confirmation',
-      winRate: 61,
-      enabled: false,
-    },
-    {
-      id: 'support-resistance',
-      name: 'Support/Resistance',
-      description: 'Trades bounces off key support and resistance levels',
-      winRate: 70,
-      enabled: false,
-    },
-    {
-      id: 'breakout',
-      name: 'Breakout Strategy',
-      description: 'Captures momentum from range breakouts with volume spike',
-      winRate: 58,
-      enabled: false,
-    },
-    {
-      id: 'fibonacci-retracement',
-      name: 'Fibonacci Retracement',
-      description: 'Enters at key Fibonacci levels during trend pullbacks',
-      winRate: 64,
-      enabled: false,
-    },
-    {
-      id: 'price-action',
-      name: 'Price Action',
-      description: 'Candlestick patterns and chart formations',
-      winRate: 69,
-      enabled: false,
-    },
-  ]);
-  
+  const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [candles, setCandles] = useState<CandlePoint[]>([]);
+  const [currentPrice, setCurrentPrice] = useState<number | null>(null);
   const [signalLogs, setSignalLogs] = useState<SignalLog[]>([]);
-  const [priceTargets, setPriceTargets] = useState<any[]>([]);
-  const [prediction, setPrediction] = useState<'BULLISH' | 'BEARISH' | 'NEUTRAL'>('NEUTRAL');
-  const [confidence, setConfidence] = useState(50);
-  const [targetPrice, setTargetPrice] = useState<number>();
+  const [prediction, setPrediction] = useState<PredictionData>();
+  const [predictionLoading, setPredictionLoading] = useState(false);
+  const [wsStatus, setWsStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
+  const [isRunning, setIsRunning] = useState(false);
 
-  const toggleStrategy = useCallback((id: string) => {
-    setStrategies(prev => 
-      prev.map(s => s.id === id ? { ...s, enabled: !s.enabled } : s)
-    );
+  const strategiesRef = useRef<Strategy[]>([]);
+  const priceRef = useRef<number | null>(null);
+  const lastCloseRef = useRef<number | null>(null);
+  const previousInstrumentRef = useRef(selectedInstrument);
+
+  useEffect(() => {
+    strategiesRef.current = strategies;
+  }, [strategies]);
+
+  useEffect(() => {
+    priceRef.current = currentPrice;
+  }, [currentPrice]);
+
+  useEffect(() => {
+    if (candles.length > 0) {
+      lastCloseRef.current = candles[candles.length - 1].close;
+    }
+  }, [candles]);
+
+  const formatSignal = useCallback(
+    (signal: SignalResponse): SignalLog => {
+      const timestamp = signal.time * 1000;
+      const strategyName =
+        strategiesRef.current.find((item) => item.id === signal.strategy)?.name ?? signal.strategy;
+
+      return {
+        id: signal.id,
+        timestamp,
+        time: formatTime(timestamp),
+        instrument: signal.symbol,
+        strategy: strategyName,
+        side: signal.side,
+        entry: signal.entry,
+        stop: signal.sl ?? null,
+        target: signal.tp ?? null,
+        status: statusMap[signal.result],
+        result: resultMap[signal.result],
+        pnl: signal.pnl ?? null,
+      };
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    fetchStrategies(controller.signal)
+      .then((catalog) => setStrategies(catalog.map(mapStrategy)))
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.error('Failed to load strategies', error);
+        toast.error('Unable to load strategies');
+      });
+
+    return () => controller.abort();
   }, []);
 
-  // Generate random signal
-  const generateSignal = useCallback(() => {
-    const enabledStrategies = strategies.filter(s => s.enabled);
-    if (enabledStrategies.length === 0) return;
-
-    const strategy = enabledStrategies[Math.floor(Math.random() * enabledStrategies.length)];
-    const side: 'BUY' | 'SELL' = Math.random() > 0.5 ? 'BUY' : 'SELL';
-    
-    const basePrice = selectedInstrument === 'EURUSD' ? 1.0850 : 
-                      selectedInstrument === 'GBPUSD' ? 1.2650 :
-                      selectedInstrument === 'USDJPY' ? 149.50 :
-                      selectedInstrument === 'AUDUSD' ? 0.6550 : 1.0850;
-    
-    const entry = basePrice + (Math.random() - 0.5) * 0.01;
-    const stopDistance = 0.003;
-    const targetDistance = 0.006;
-    
-    const stop = side === 'BUY' ? entry - stopDistance : entry + stopDistance;
-    const target = side === 'BUY' ? entry + targetDistance : entry - targetDistance;
-
-    const signal: SignalLog = {
-      id: `signal-${Date.now()}-${Math.random()}`,
-      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      strategy: strategy.name,
-      side,
-      entry: parseFloat(entry.toFixed(5)),
-      stop: parseFloat(stop.toFixed(5)),
-      target: parseFloat(target.toFixed(5)),
-      status: 'ACTIVE',
-    };
-
-    setSignalLogs(prev => [signal, ...prev]);
-    
-    // Add price targets to chart
-    setPriceTargets(prev => [
-      ...prev,
-      { id: `${signal.id}-entry`, price: signal.entry, type: 'entry', strategy: strategy.name },
-      { id: `${signal.id}-stop`, price: signal.stop, type: 'stop', strategy: strategy.name },
-      { id: `${signal.id}-target`, price: signal.target, type: 'target', strategy: strategy.name },
-    ]);
-
-    // Show toast notification
-    toast.success(`New ${side} Signal`, {
-      description: `${strategy.name} - Entry: ${signal.entry.toFixed(5)}`,
-    });
-
-    // Simulate signal resolution after some time
-    setTimeout(() => {
-      const isWin = Math.random() < (strategy.winRate / 100);
-      const pnl = isWin ? Math.random() * 50 + 10 : -(Math.random() * 30 + 5);
-      
-      setSignalLogs(prev => 
-        prev.map(s => 
-          s.id === signal.id 
-            ? { ...s, status: isWin ? 'CLOSED' : 'STOPPED', result: isWin ? 'WIN' : 'LOSS', pnl: parseFloat(pnl.toFixed(2)) }
-            : s
-        )
-      );
-
-      // Remove price targets after resolution
-      setTimeout(() => {
-        setPriceTargets(prev => prev.filter(pt => !pt.id.startsWith(signal.id)));
-      }, 5000);
-    }, Math.random() * 20000 + 10000);
-
-  }, [strategies, selectedInstrument]);
-
-  // Update prediction
   useEffect(() => {
-    const updatePrediction = () => {
-      const predictions: ('BULLISH' | 'BEARISH' | 'NEUTRAL')[] = ['BULLISH', 'BEARISH', 'NEUTRAL'];
-      const newPrediction = predictions[Math.floor(Math.random() * predictions.length)];
-      const newConfidence = Math.floor(Math.random() * 30) + 55;
-      
-      const basePrice = selectedInstrument === 'EURUSD' ? 1.0850 : 
-                        selectedInstrument === 'GBPUSD' ? 1.2650 :
-                        selectedInstrument === 'USDJPY' ? 149.50 :
-                        selectedInstrument === 'AUDUSD' ? 0.6550 : 1.0850;
-      
-      const targetVariation = (Math.random() - 0.5) * 0.02;
-      const newTargetPrice = basePrice + targetVariation;
-      
-      setPrediction(newPrediction);
-      setConfidence(newConfidence);
-      setTargetPrice(newTargetPrice);
-    };
+    const controller = new AbortController();
+    setCandles([]);
+    setCurrentPrice(null);
 
-    updatePrediction();
-    const interval = setInterval(updatePrediction, 30000);
-    return () => clearInterval(interval);
+    fetchCandles({ symbol: selectedInstrument, timeframe: TIMEFRAME, limit: CANDLE_LIMIT }, controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setCandles(data);
+        if (data.length > 0) {
+          setCurrentPrice(data[data.length - 1].close);
+        }
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.error('Failed to load candles', error);
+        toast.error('Unable to load candles');
+      });
+
+    return () => controller.abort();
   }, [selectedInstrument]);
 
-  // Signal generation loop
   useEffect(() => {
-    if (!isRunning) return;
+    const controller = new AbortController();
 
-    const enabledCount = strategies.filter(s => s.enabled).length;
-    if (enabledCount === 0) return;
+    fetchSignals({ symbol: selectedInstrument }, controller.signal)
+      .then((items) => {
+        if (controller.signal.aborted) return;
+        const mapped = items.map((signal) => formatSignal(signal)).sort((a, b) => b.timestamp - a.timestamp);
+        setSignalLogs(mapped);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.error('Failed to load signals', error);
+        toast.error('Unable to load signals');
+      });
 
-    const interval = setInterval(() => {
-      if (Math.random() > 0.6) { // 40% chance to generate signal
-        generateSignal();
+    return () => controller.abort();
+  }, [formatSignal, selectedInstrument]);
+
+  useEffect(() => {
+    const previousInstrument = previousInstrumentRef.current;
+    if (previousInstrument === selectedInstrument) {
+      return;
+    }
+
+    const activeStrategies = strategiesRef.current.filter((strategy) => strategy.enabled);
+    if (activeStrategies.length > 0) {
+      const migrateStrategies = async () => {
+        try {
+          await Promise.all(
+            activeStrategies.map((strategy) =>
+              disableStrategy({ id: strategy.id, symbol: previousInstrument, tf: TIMEFRAME }),
+            ),
+          );
+          await Promise.all(
+            activeStrategies.map((strategy) =>
+              enableStrategy({ id: strategy.id, symbol: selectedInstrument, tf: TIMEFRAME, settings: {} }),
+            ),
+          );
+          toast.info(`Strategies reconfigured for ${selectedInstrument}`);
+        } catch (error) {
+          console.error('Failed to migrate strategies', error);
+          toast.error('Unable to reconfigure strategies for the new instrument');
+        }
+      };
+
+      migrateStrategies();
+    }
+
+    previousInstrumentRef.current = selectedInstrument;
+  }, [selectedInstrument]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setPredictionLoading(true);
+
+    fetchPrediction({ symbol: selectedInstrument, timeframe: TIMEFRAME }, controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        const reference = priceRef.current ?? lastCloseRef.current ?? null;
+        const target = data.target ?? null;
+        let direction: PredictionData['direction'] = 'NEUTRAL';
+
+        if (target !== null && reference !== null) {
+          if (target > reference) direction = 'BULLISH';
+          else if (target < reference) direction = 'BEARISH';
+          else direction = 'NEUTRAL';
+        }
+
+        const confidence = data.confidence ? Math.round(data.confidence * 100) : 0;
+        setPrediction({ direction, confidence, targetPrice: target });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        console.error('Failed to load prediction', error);
+        toast.error('Unable to load prediction');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setPredictionLoading(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [selectedInstrument]);
+
+  useEffect(() => {
+    setWsStatus('connecting');
+    const disconnect = connectMarketStream({
+      onOpen: () => setWsStatus('open'),
+      onClose: () => setWsStatus('closed'),
+      onError: (event) => {
+        console.error('WebSocket error', event);
+        setWsStatus('closed');
+        toast.error('Market stream disconnected');
+      },
+      onMessage: (message: MarketMessage) => {
+        switch (message.topic) {
+          case 'price.tick': {
+            if (message.data.symbol !== selectedInstrument) return;
+            const mid = (message.data.bid + message.data.ask) / 2;
+            setCurrentPrice(Number(mid.toFixed(5)));
+            break;
+          }
+          case 'bar.update': {
+            if (message.data.symbol !== selectedInstrument || message.data.tf !== TIMEFRAME) return;
+            const bar = message.data.bar;
+            const nextCandle: CandlePoint = {
+              timestamp: bar.t * 1000,
+              open: bar.o,
+              high: bar.h,
+              low: bar.l,
+              close: bar.c,
+              volume: bar.v ?? 0,
+            };
+
+            setCandles((prev) => {
+              const idx = prev.findIndex((item) => item.timestamp === nextCandle.timestamp);
+              if (idx >= 0) {
+                const copy = [...prev];
+                copy[idx] = nextCandle;
+                return copy;
+              }
+              const updated = [...prev, nextCandle].sort((a, b) => a.timestamp - b.timestamp);
+              return updated.slice(-CANDLE_LIMIT);
+            });
+            setCurrentPrice(nextCandle.close);
+            break;
+          }
+          case 'signal.new': {
+            if (message.data.symbol !== selectedInstrument) return;
+            const log = formatSignal(message.data);
+            setSignalLogs((prev) => {
+              const exists = prev.some((item) => item.id === log.id);
+              if (exists) return prev;
+              return [log, ...prev].sort((a, b) => b.timestamp - a.timestamp);
+            });
+            toast.success(`${message.data.side} signal`, {
+              description: `${log.strategy} · Entry ${log.entry.toFixed(5)}`,
+            });
+            break;
+          }
+          default:
+            break;
+        }
+      },
+    });
+
+    return () => disconnect();
+  }, [formatSignal, selectedInstrument]);
+
+  const handleStrategyChange = useCallback((id: string, enabled: boolean) => {
+    setStrategies((prev) => prev.map((strategy) => (strategy.id === id ? { ...strategy, enabled } : strategy)));
+  }, []);
+
+  const activeStrategies = strategies.filter((strategy) => strategy.enabled);
+
+  const handleRunnerToggle = async () => {
+    if (activeStrategies.length === 0) {
+      toast.info('Select at least one strategy to run');
+      setIsRunning(false);
+      return;
+    }
+
+    try {
+      if (isRunning) {
+        await Promise.all(
+          activeStrategies.map((strategy) =>
+            disableStrategy({ id: strategy.id, symbol: selectedInstrument, tf: TIMEFRAME }),
+          ),
+        );
+        setIsRunning(false);
+        toast.success('Strategies disabled');
+      } else {
+        await Promise.all(
+          activeStrategies.map((strategy) =>
+            enableStrategy({ id: strategy.id, symbol: selectedInstrument, tf: TIMEFRAME, settings: {} }),
+          ),
+        );
+        setIsRunning(true);
+        toast.success('Strategies enabled');
       }
-    }, 8000);
+    } catch (error) {
+      console.error('Failed to toggle strategies', error);
+      toast.error('Unable to update strategies');
+    }
+  };
 
-    return () => clearInterval(interval);
-  }, [isRunning, strategies, generateSignal]);
+  const priceTargets: PriceTarget[] = useMemo(() => {
+    return signalLogs
+      .filter((log) => log.instrument === selectedInstrument)
+      .flatMap((log) => {
+        const targets: PriceTarget[] = [];
+        targets.push({ id: `${log.id}-entry`, price: log.entry, type: 'entry', strategy: log.strategy });
+        if (log.stop !== undefined && log.stop !== null) {
+          targets.push({ id: `${log.id}-stop`, price: log.stop, type: 'stop', strategy: log.strategy });
+        }
+        if (log.target !== undefined && log.target !== null) {
+          targets.push({ id: `${log.id}-target`, price: log.target, type: 'target', strategy: log.strategy });
+        }
+        return targets;
+      });
+  }, [selectedInstrument, signalLogs]);
 
   return (
     <div className="w-full min-h-screen bg-background">
-      <Toaster />
+      <Toaster richColors position="top-right" />
       <div className="flex flex-col gap-4 p-4 max-w-[1800px] mx-auto w-full">
-        {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Activity className="w-8 h-8 text-primary" />
             <h1 className="text-foreground">Forex Strategy Runner</h1>
           </div>
-          
           <div className="flex items-center gap-4">
-            <InstrumentSelector 
-              value={selectedInstrument} 
-              onChange={setSelectedInstrument}
-            />
-            
+            <InstrumentSelector value={selectedInstrument} onChange={setSelectedInstrument} />
             <Button
               variant={isRunning ? 'destructive' : 'default'}
-              onClick={() => {
-                setIsRunning(!isRunning);
-                toast.info(isRunning ? 'Strategy runner stopped' : 'Strategy runner started');
-              }}
+              onClick={handleRunnerToggle}
               className="gap-2"
             >
               {isRunning ? (
                 <>
-                  <PauseCircle className="w-4 h-4" />
+                  <PauseCircle className="h-4 w-4" />
                   Stop
                 </>
               ) : (
                 <>
-                  <PlayCircle className="w-4 h-4" />
+                  <PlayCircle className="h-4 w-4" />
                   Start
                 </>
               )}
@@ -231,37 +376,30 @@ export default function App() {
           </div>
         </div>
 
-        {/* Main Content */}
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-          {/* Left Panel - Strategies */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
           <div className="lg:col-span-1">
-            <StrategySelector 
+            <StrategySelector
               strategies={strategies}
-              onToggleStrategy={toggleStrategy}
+              symbol={selectedInstrument}
+              onStrategyChange={handleStrategyChange}
             />
           </div>
-
-          {/* Center Panel - Chart and Prediction */}
           <div className="lg:col-span-3 flex flex-col gap-4">
             <div className="bg-card border border-border rounded-lg p-4 h-[500px]">
-              <ForexChart 
+              <ForexChart
                 instrument={selectedInstrument}
+                candles={candles}
+                currentPrice={currentPrice}
+                connectionStatus={wsStatus}
                 priceTargets={priceTargets}
               />
             </div>
-            
-            <PredictionPanel
-              prediction={prediction}
-              confidence={confidence}
-              targetPrice={targetPrice}
-              timeframe="Next 1-4 hours"
-            />
+            <PredictionPanel prediction={prediction} timeframe="Next 1-4 hours" loading={predictionLoading} />
           </div>
         </div>
 
-        {/* Signal Logs */}
         <div className="min-h-[350px]">
-          <SignalLogs logs={signalLogs} />
+          <SignalLogs logs={signalLogs.filter((log) => log.instrument === selectedInstrument)} />
         </div>
       </div>
     </div>
